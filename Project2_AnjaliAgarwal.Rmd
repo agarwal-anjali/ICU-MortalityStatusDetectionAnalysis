@@ -1,0 +1,553 @@
+---
+title: "DSA3361 Project: Regression"
+output: html_document
+date: "2023-11-08"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Importing required libraries 
+```{r}
+library(magrittr)
+library(tidyverse)
+library(corrplot) # for correlation matrix 
+library(car) # for vif 
+library(caret) # for confusion matrix and evaluation metrics
+library(pROC) # for ROC plots 
+library(glmnet)
+```
+
+# Reading data
+```{r}
+df.icu <- read.csv("icu.csv")
+head(df.icu)
+```
+Checking whether data has any null/duplicated entries or not and what are the categories in both the categorical variables.
+```{r}
+sum(is.na(df.icu))
+sum(duplicated(df.icu))
+unique(df.icu$Mortality)
+unique(df.icu$Race)
+```
+
+Modifying data representation:
+
+- Changing column names to maintain consistency.
+
+- Factoring the categorical predictor variable `race`.
+
+- Factoring the categorical response variable `mortality` and encoding it as numeric variable.
+
+
+```{r}
+colnames(df.icu) <- c("patientId", "mortality", "age", "race", "sbp", "dbp", "map", "temp", "resp")
+
+df.icu <- df.icu %>% 
+  mutate(mortality = as.factor(mortality),
+         race = as.factor(race)) %>% 
+  mutate(race = tolower(race)) %>% 
+  mutate(p_mortality = ifelse(mortality == "TRUE", 1, 0))
+
+head(df.icu)
+```
+
+# Exploratory Data Analysis
+
+Inspecting data set.
+```{r}
+str(df.icu)
+```
+Here, we visualize the size of the categories in the response variable, `default` using a bar plot. These are the steps.
+```{r}
+ggplot(df.icu) + 
+  geom_bar(aes(x=mortality, fill=mortality)) + 
+  labs(y="No. of mortals", x="Mortality") +
+  scale_fill_manual(values = c("skyblue", "orange")) +
+  theme_light() + 
+  theme(legend.position = "none")
+```
+Comment: From the visual it is evident that more than 75% of the patient's mortality status is FALSE. To get the exact figures lets group the data by their mortality status and view the statistics.
+
+```{r}
+df.icu %>% 
+  group_by(mortality) %>% 
+  summarise(prop = n()/nrow(df.icu))
+```
+Comments:
+
+- As per the output, approximately 92% of the sample patients have their mortality status as FALSE.
+
+- This ideally makes sense as even if the data set is collected through random sampling the number of patients that are alive will be more than the number of dead patients.
+
+- Furthermore, although this imbalance wouldn't affect our modelling to predict the mortality status much, but the concern is can it be possible that the data is biased and should we consider a more balanced data set?
+
+- This decision is subjective to certain factors like: what are we aiming at from this analysis, what sampling method was chosen, is there even sufficient data to conduct a more balanced sampling, and what are the trade offs between doing random sampling and aiming for a balanced data set.
+
+
+Now, let's visualize the relationship between the categorical response variable and all the numeric predictor variables using box plot.
+1) `mortality` vs `age`
+2) `mortality` vs `sbp`
+3) `mortality` vs `dbp`
+4) `mortality` vs `map`
+5) `mortality` vs `temp`
+6) `mortality` vs `resp``
+```{r}
+ggplot(df.icu, aes(x=mortality, y=age)) + 
+  stat_boxplot(geom = 'errorbar', width = 0.2) + 
+  geom_boxplot(aes(fill=mortality)) + 
+  stat_summary(fun="mean", shape=4) + 
+  scale_fill_manual(values = c("skyblue", "orange")) + 
+  theme_light() + 
+  theme(legend.position = "none")+
+  labs(x="Mortality Status",y="Age")
+
+ggplot(df.icu, aes(x=mortality, y=sbp)) + 
+  stat_boxplot(geom = 'errorbar', width = 0.2) + 
+  geom_boxplot(aes(fill=mortality)) + 
+  stat_summary(fun="mean", shape=4) + 
+  scale_fill_manual(values = c("skyblue", "orange")) + 
+  theme_light() + 
+  theme(legend.position = "none")+
+  labs(x="Mortality Status",y="SBP")
+
+ggplot(df.icu, aes(x=mortality, y=dbp)) + 
+  stat_boxplot(geom = 'errorbar', width = 0.2) + 
+  geom_boxplot(aes(fill=mortality)) + 
+  stat_summary(fun="mean", shape=4) + 
+  scale_fill_manual(values = c("skyblue", "orange")) + 
+  theme_light() + 
+  theme(legend.position = "none")+
+  labs(x="Mortality Status",y="DBP")
+
+ggplot(df.icu, aes(x=mortality, y=map)) + 
+  stat_boxplot(geom = 'errorbar', width = 0.2) + 
+  geom_boxplot(aes(fill=mortality)) + 
+  stat_summary(fun="mean", shape=4) + 
+  scale_fill_manual(values = c("skyblue", "orange")) + 
+  theme_light() + 
+  theme(legend.position = "none")+
+  labs(x="Mortality Status",y="MAP")
+
+ggplot(df.icu, aes(x=mortality, y=temp)) + 
+  stat_boxplot(geom = 'errorbar', width = 0.2) + 
+  geom_boxplot(aes(fill=mortality)) + 
+  stat_summary(fun="mean", shape=4) + 
+  scale_fill_manual(values = c("skyblue", "orange")) + 
+  theme_light() + 
+  theme(legend.position = "none")+
+  labs(x="Mortality Status",y="Temperature")
+
+ggplot(df.icu, aes(x=mortality, y=resp)) + 
+  stat_boxplot(geom = 'errorbar', width = 0.2) + 
+  geom_boxplot(aes(fill=mortality)) + 
+  stat_summary(fun="mean", shape=4) + 
+  scale_fill_manual(values = c("skyblue", "orange")) + 
+  theme_light() + 
+  theme(legend.position = "none")+
+  labs(x="Mortality Status",y="Respiration")
+```
+Observations:
+
+- Distribution of `Temperature` is similar for both TRUE and FALSE mortality status'. Hence, it is likely that `temp` is not a good predictor.
+
+- For all other predictor variables the distribution slightly varies for both the mortality status'. Hence, let's continue to consider them to have some effect on the mortality status of the patients.
+
+- There are a lot of outliers in all of the plots, specially for Age, SBP, DBP, and MAP, which might affect the accuracy of the model later.
+
+
+Now, let's also visualize the relationship between categorical response variable `mortality` and categorical predictor variable `race` using stacked box plot.
+```{r}
+ggplot(df.icu) + 
+  geom_bar(aes(x=mortality,fill=race), position = "fill") +
+  labs(y="Proportion", x="Mortality Status") + 
+  theme_light() + 
+  theme(legend.position = "bottom")
+```
+
+Observation: Proportion of all `Race` is similar for both the mortality status. Hence, it is likely that `race` is not a good predictor.
+
+Let's also conduct a chi-squared test to verify this inference that `race` might not have a direct association or major effect on `mortality status`.
+```{r}
+chisq.test(df.icu$race, df.icu$mortality)
+```
+Comments: 
+
+- Since, p-value > 0.05, we fail to reject the null hypothesis, i.e., we fail to reject that there is no significant association or difference between the categorical variables `mortality` and `race`.
+
+- Thus, we can infer that there is insufficient evidence to support that `mortality` and `race` have a significance association.
+
+Furthermore, let's check for multi-collinearity in the data set, i.e., whether there is a significant correlation between the variables or not. To do so, I will generate the correlation matrix for the numeric predictor variables and the encoded response variable in `df.icu` using the `cor()` function and visualize it using `corrplot()`.
+```{r}
+correlation <- cor(df.icu[,c(3,5:10)])
+corrplot(corr = correlation, method = 'number', type = 'upper')
+correlation
+```
+
+Observations:
+
+- Strong positive correlation between `SBP` and `MAP`.
+
+- Strong positive correlation between `DBP` and `MAP`.
+
+- Weak to moderate correlation between `SBP` and `DBP`.
+
+The strong correlations have a higher tendency to affect the accuracy of the model by influencing the model coefficients. Let's deal with this later and decide which all variables to drop later after building Ridge and Lasso models as well.
+
+
+# Model Fitting & Evaluation
+
+Splitting data set into train and test. Choosing `split_fraction` as 0.7 to be able to make a better judgement of the whether there is over-fitting in the model or not.
+```{r}
+split_train_test <- function(df, split_fraction){
+  set.seed(123)
+  nrows <- nrow(df)
+  sample_size <- round(nrows*split_fraction)
+  index <- sample(seq_len(nrows), size = sample_size)
+  return(index)
+}
+
+index <- split_train_test(df.icu, 0.7)
+train <- df.icu[index, ]
+test <- df.icu[-index, ]
+```
+
+Next, let us fit the first basic logistic regression model using `glm()` function, including all the predictor variables.
+Note: Not using the `.` operator to include all predictor variables as there's a column for `patientId` as well which is not to be considered while building the model. To avoid errors I could even removed it from the data set, but I choose to let it be.
+```{r}
+model1 = glm(mortality ~ age + race + sbp + dbp + map + temp + resp,
+            data = train,
+            family = binomial)
+summary(model1)
+```
+Observations:
+
+- As per the p-value, `race` predictor variable is almost insignificant in the model.
+
+- Also as I previously inferred from the box plot `temp` doesn't seem to be a good predictor in the model.
+
+- Since AIC is the measure of bias and complexity in the model, it should be as low as possible. Here, AIC is 6803.3. Let's see if we can further reduce it by removing insignificant predictors.
+
+But before removing `race` predictor variable from the model, let's check for multi-collinearity in the model by using the vif() function.
+```{r}
+vif(model1)
+```
+Comment: As per the outcome, since `sbp`, `dbp` and `map` have GVIF values greater than sqaure root of 10, there exists multi-collinearity in the model, specially due to the predictor `map` which has highest GVIF value.
+
+Let's now create an evaluation function to evaluate this model.
+```{r}
+eval_model <- function(model, data, test_flag, threshold)
+{
+  if(test_flag)
+    y_probs <- predict(model, newdata = data, type = "response")
+  else 
+    y_probs <- fitted(model)
+  
+  y_pred <- ifelse(y_probs > threshold, "TRUE", "FALSE")
+  y_true <- data$mortality
+  
+  y_true <- factor(y_true, levels = c(FALSE, TRUE))
+  y_pred <- factor(y_pred, levels = c(FALSE, TRUE))
+
+  
+  cm <- table(y_pred, y_true)
+  print(cm)
+  
+  # Calculate metrics using confusionMatrix()
+  metrics <- confusionMatrix(cm, positive = "TRUE")
+  print(metrics)
+
+  # Extract individual metrics
+  accuracy <- metrics$overall["Accuracy"]
+  sensitivity <- metrics$byClass["Sensitivity"]
+  specificity <- metrics$byClass["Specificity"]
+  precision <- metrics$byClass["Pos Pred Value"]
+  f1_score <- metrics$byClass["F1"]
+
+  plot.roc(y_true, y_probs, print.auc = TRUE, 
+           thresholds="best",
+           print.thres="best")
+  auc <- auc(roc(y_true, y_probs))
+  
+  evalnames <- c("accuracy", "sensitivity", "specificity", "precision", "f1_score", "auc")
+  evaldata <- c(accuracy, sensitivity, specificity, precision, f1_score, auc)
+  evalmetrics <- data.frame(evalnames, evaldata)
+  return(evalmetrics)
+}
+```
+
+Let's now evaluate `model` using the evaluation function.
+```{r}
+e1_train <- eval_model(model1, train, FALSE, 0.5)
+e1_train
+```
+Note:
+
+- While printing confusion matrix the `table()` function by default chooses `FALSE` as first argument because that appears first in the data set.
+
+- But to ensure that it is not the case that `FALSE` is chosen as a `Positive` value when metrics are calculated, I explicitly specified `positive = "TRUE"` in the `confusionMatrix()` function.
+
+Observations:
+
+- Accuracy & Specificity is high, but Sensitivity is really low.
+
+- Specificity being high indicates that whenever the actual value is `FALSE` the predicted value is also is `FALSE` most of the time. The reason behind it is quite obvious because more than 90% of samples in our data set has mortality status as `FALSE` due to which the model is good in predicting accurately whenever the actual value is `FALSE`.
+
+- Hence, due to the same reason sensitivity is really low as the model doesn't have enough sample for `mortality status` as `TRUE` for it to perform well as it tends to predict `mortality status` as `FALSE` more often, even when the actual status is `TRUE`
+
+- Due to this imbalance in `sensitivity` and `specificity` the `f1_score` value is also low. But precision is most of the samples have `mortality status` as `FALSE` and even the model predicts `FALSE` more often.
+
+- Moreover, the best threshold value for this model suggested by the ROC curve is 0.079. In my opinion, the reason behind the threshold value being low is same as the above stated reason. By using this new threshold we might be able to improve the metrics by balancing `specificity` and `sensitivity`.
+
+Let's also check how the model performs on `test` data to see if there exists over-fitting in the `model1`.
+```{r}
+e1_test <- eval_model(model1, test, TRUE, 0.5)
+e1_test
+```
+Comment: On comparing the eval_data for train and test I inferred that since almost all metrics are quite similar and only `precision` and `f1_score` has minute differences the model doesn't seem to have significant over-fitting.
+
+Summary of issues in `model1`:
+
+- From model summary I inferred, AIC is not low. A naive way to find the best model with lowest AIC would be to build models with all possible combinations of predictors and choose the one with lowest AIC. But I'll explore better ways to do so.
+
+- From vif() I inferred, multi-collinearity exists. The predictor `map` seems to have a very high multi-collinearity with other variables in the model. Even though `dbp` also shows some multi-collinearity it might not be that significant and just building a model by dropping `map` predictor might eliminate the issue of multi-collinearity.
+
+- From confusion matrix metrics evaluated using both train and test data, I inferred that `sensitivity` is low and the suggested threshold for the model is really less, i.e., approximately 0.079. Assumption is that by using the suggested threshold, I might be able achieve better balance between `sensitivity` and `specificity`.
+
+Let's check my assumption and use threshold = 0.079.
+```{r}
+e1_train_updated <- eval_model(model1, train, FALSE, 0.079)
+e1_train_updated
+```
+
+```{r}
+e1_test_updated <- eval_model(model1, test, TRUE, 0.079)
+e1_test_updated
+```
+Observations:
+
+- On reducing the threshold, the `specificity` and `sensitivity` becomes quite balanced as `sensitivity` increase a lot and `specificity` decreases to some extent.
+
+- There are definitely trade-offs between choosing an appropriate threshold that provides a higher sensitivity with lower specificity or the one with lower sensitivity with higher specificity, depending on our requirements.
+
+- In this particular case it might be ideal to have higher specificity as here we are predicting the mortality status of patients and predicting `mortality status` to be `FALSE` when it is `TRUE` might not be as dangerous as predicting it to be `TRUE` when it is actually `FALSE`. Thus, having higher specificity is good.
+
+- Moreover, after I reduced the threshold the `precision` metric also dropped to a great extent.
+
+- Thus, choosing a lower threshold didn't help in this particular situation and increasing the threshold might not even be required as the `specificity` for threshold = 0.5 was already very high.
+
+# Regularization
+
+Now, finally to address the issues of lower AIC, and the existence of multi-collinearity. Let's perform regularization to find the most suitable model.
+
+There are ideally two options:
+
+- Build a Ridge Regression model with `lambda$min` to ensure no variable selection is done.
+
+- Build a Lasso Regression model with `lambda$min` to ensure model is easily interpretable and less complex. 
+
+Note: As the trade-off between using `lambda$min` and `lambda$1se` is choosing between minimum error or increased interpretability.  I am using lambda$min as in this particular situation priority is to reduce the error in the model.
+
+Decision: As the data set doesn't have a lot of unnecessary predictors and while predicting `mortality status` the domain expert might want to consider as many predictors as possible to make a judgement about `mortality status`. I would want to build a model that doesn't eliminate a lot of predictors just because they are less significant and only eliminates variables that holds negligible significance.
+
+To do so, let's implement a model with Elastic Net Regression to find a perfect balance between Ridge and Lasso regression models.
+
+First, let's split data:
+```{r}
+train.x <- model.matrix(mortality ~ . -patientId - p_mortality, data = train)[, -1]
+train.y <- train$mortality
+test.x  <- model.matrix(mortality ~ . -patientId - p_mortality, data = test)[, -1]
+test.y  <- test$mortality
+```
+
+
+Let's do cross-validation to choose appropriate values for the parameters: alpha and lambda.
+
+```{r}
+generate_cvmodels <- function (x) {
+  set.seed(123)
+  alpha <- x/10
+  model <- cv.glmnet(train.x, train.y, family = "binomial",
+                  type.measure = "auc", alpha = x/10)
+  newx = train.x
+  pred = predict(model, newx, type = 'response',s ="lambda.min")
+  auc_value <- auc(train.y,pred)
+  return (list(alpha = x/10, auc = auc_value, lambda = model$lambda.min))
+}
+```
+
+```{r}
+cv_models <- lapply(0:10, generate_cvmodels)
+```
+
+```{r}
+# Extract alpha and AUC values
+alphas <- sapply(cv_models, function(m) m$alpha)
+auc_values <- sapply(cv_models, function(m) m$auc)
+lambdas <- sapply(cv_models, function(m) m$lambda)
+
+# Print the alpha and AUC values as needed
+print(data.frame(alpha = alphas, auc = auc_values, lambda = lambdas))
+```
+```{r}
+plot(
+  alphas,
+  auc_values,
+  main = "Cross Validation AUC for the Optimal Models of
+  different Alpha Values",
+  xlab = "Alpha",
+  ylab = "CV AUC",
+  cex = 1.4,
+  cex.lab = 1.3,
+  cex.main = 1.4,
+  pch = 19,
+  col = "blue",
+  type = "b"
+)
+
+text(alphas,
+     auc_values + 0.001,
+     labels = round(auc_values, digits = 3),
+     cex = 1.3)
+
+max_auc_index <- which.max(auc_values)
+best_alpha <- alphas[max_auc_index]
+highest_auc <- auc_values[max_auc_index]
+
+points(best_alpha,
+       highest_auc,
+       pch = 17,
+       col = "red",
+       cex = 1.7)
+```
+
+```{r}
+get_best_model <- function () {  
+  index  = which.max(auc_values)
+  return(
+    data.frame(
+      alpha = alphas[index],  
+      lambda = lambdas[index]
+    )
+  )
+}
+```
+
+```{r}
+best_parameter <- get_best_model()
+best_parameter
+```
+
+```{r}
+model2 <- glmnet(train.x, 
+                     train.y,
+                     family = "binomial",
+                     alpha = best_parameter$alpha, 
+                     lambda = best_parameter$lambda)
+t(coef(model2))
+```
+Observation: No variable selection was performed.Most important predictor variable is `Respiration`.
+
+```{r}
+eval_elanet <- function(model, x, y)
+{
+  cnf = confusion.glmnet(model, newx = train.x, newy = train.y)
+  print(cnf)
+  
+  # Calculate metrics using confusionMatrix()
+  metrics <- confusionMatrix(cnf, positive = "TRUE")
+  print(metrics)
+
+  # Extract individual metrics
+  accuracy <- metrics$overall["Accuracy"]
+  sensitivity <- metrics$byClass["Sensitivity"]
+  specificity <- metrics$byClass["Specificity"]
+  precision <- metrics$byClass["Pos Pred Value"]
+  f1_score <- metrics$byClass["F1"]
+  
+  evalnames <- c("accuracy", "sensitivity", "specificity", "precision", "f1_score")
+  evaldata <- c(accuracy, sensitivity, specificity, precision, f1_score)
+  evalmetrics <- data.frame(evalnames, evaldata)
+  return(evalmetrics)
+}
+```
+
+
+```{r}
+summary_ElaNet_train <- eval_elanet(model2, train.x, train.y)
+summary_ElaNet_train
+```
+
+```{r}
+summary_ElaNet_test <- eval_elanet(model2, test.x, test.y)
+summary_ElaNet_test
+```
+Observation: `model2` has similar performance as `model1` as it didn't perform any variable selection and even the coefficients are quite similar.
+
+Lastly, we can choose to build a lasso model or in our case since we already know the least important variables now. Let's manually drop `race` and `temp`.
+```{r}
+model3 <- glm(mortality ~ age + sbp + dbp + map + resp,
+            data = train,
+            family = "binomial")
+summary(model3)
+```
+```{r}
+vif(model3) # check if multi-collinearity still exists
+```
+Observation: Multi-collinearity still exists.
+
+```{r}
+e2_train <- eval_model(model3, train, FALSE, 0.5)
+e2_train
+```
+```{r}
+e2_test <- eval_model(model3, test, TRUE, 0.5)
+e2_test
+```
+Comment: No significant improvement in `model3` from `model1`.
+
+So let's drop `map` as well.
+```{r}
+model4 <- glm(mortality ~ age + sbp + resp,
+            data = train,
+            family = binomial)
+summary(model4)
+```
+Observation: Even after eliminating multi-collinearity from the model, still the AIC value didn't improve.
+
+```{r}
+vif(model4) # check if multi-collinearity still exists
+```
+Observation: Multi-collinearity is eliminated.
+
+```{r}
+e2_train <- eval_model(model4, train, FALSE, 0.5)
+e2_train
+```
+```{r}
+e2_test <- eval_model(model4, test, TRUE, 0.5)
+e2_test
+```
+Comment: No significant improvement in `model4` from `model1`.
+
+Thus, `model2` should be an ideal model to predict `mortality status` as the model ensures to balance the significant and non-significant variables well and addressing the issue of multicollinearity.
+
+# Final analysis of the model
+
+- `Race` and `Temperature` are not singinificant predictors.
+
+- `MAP` has a high multi-collinearity with other variables, but removing it from the model doesn't improve model performance.
+
+- AUC measure is not good for the final models, hence it might not be suitable to predict `mortality status` using model built on the given data set.
+
+# Issues Identified
+
+- Initial assumption that disproportionate data wouldn't affect the performance of the model was wrong. The data set provided was biased as more than 92% data had `mortality status` as `FALSE`. Thus, although high specificity of the models was helpful in this particular scenario, the sensitivity of the model was comparatively very low which could lead to biased predictions.
+
+- Insufficient predictor variables. After the analysis it can be concluded that the since 2 out of 7 predictor variables were insignificant and approximately 2 predictor variables had high multi-collinearity, more significant predictors must be provided in order to make accurate and informed predictions.
+
+# Suggestions
+
+- To address the issues stated above, re-sampling must be done while ensuring the data is not biased and there are enough predictor variables relating to the health status of patients to ensure that more accurate and precised predictions can be made.
+
