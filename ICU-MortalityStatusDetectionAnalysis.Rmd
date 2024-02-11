@@ -1,5 +1,5 @@
 ---
-title: "DSA3361 Project: Regression"
+title: "Project: ICU-MortalityStatusDetectionAnalysis"
 output: html_document
 date: "2023-11-08"
 ---
@@ -21,7 +21,7 @@ library(glmnet)
 
 # Reading data
 ```{r}
-df.icu <- read.csv("icu.csv")
+df.icu <- read.csv("data/icu.csv")
 head(df.icu)
 ```
 Checking whether data has any null/duplicated entries or not and what are the categories in both the categorical variables.
